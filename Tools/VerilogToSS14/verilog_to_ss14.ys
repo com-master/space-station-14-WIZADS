@@ -1,0 +1,91 @@
+# ============================================================
+#  verilog_to_ss14.ys — Yosys synthesis script
+#  Translates Verilog to Space Station 14 logic gate netlist
+# ============================================================
+#
+# SS14 available logic components:
+#   LogicGateAnd  — AND  gate (2-input, $14_AND_)
+#   LogicGateOr   — OR   gate (2-input, $_OR_)
+#   LogicGateXor  — XOR  gate (2-input, $_XOR_)
+#   LogicGateNand — NAND gate (2-input, $_NAND_)
+#   LogicGateNor  — NOR  gate (2-input, $_NOR_)
+#   LogicGateXnor — XNOR gate (2-input, $_XNOR_)
+#   MemoryCell    — D-Latch   ($_DLATCH_P_, D+EN inputs)
+#
+#   NOTE: SS14 has no NOT entity.
+#         abc will absorb inverters into NAND/NOR automatically.
+#         Any leftover $_NOT_ is flagged by netlist_to_ss14.py
+#         and implemented as NAND with InputA=InputB.
+#
+# ── Usage ────────────────────────────────────────────────────
+#
+#   Option A — inline (single command):
+#     yosys -p "read_verilog design.v" -s verilog_to_ss14.ys
+#
+#   Option B — Tcl wrapper (recommended, handles arguments):
+#     yosys -c verilog_to_ss14.tcl -- design.v [TopModule]
+#
+#   Option C — interactive:
+#     yosys
+#     > read_verilog design.v
+#     > script verilog_to_ss14.ys
+#
+# ── Outputs ──────────────────────────────────────────────────
+#   output_netlist.json   → pass to netlist_to_ss14.py
+#   synthesis_report.txt  → gate-count summary
+# ─────────────────────────────────────────────────────────────
+
+# Elaborate: find the top module automatically
+hierarchy -check -auto-top
+
+# Convert procedural blocks (always @, initial) to RTL
+proc
+
+# Basic optimisation pass
+opt
+
+# Inline all submodules into a flat netlist
+flatten
+
+# Second optimisation after flattening
+opt
+
+# Infer registers from array assignments; convert to MUX+register logic
+# (SS14 has no RAM — all storage becomes MemoryCell latches)
+memory -nomap
+
+# Optimise the register/MUX structures
+opt
+
+# Map abstract Yosys cells to primitives:
+#   $and → $_AND_,  $dff → $_DFF_P_,  $dlatch → $_DLATCH_P_,  etc.
+techmap
+
+# Light cleanup after techmap
+opt -fast
+
+# ── Technology mapping to SS14 gate set ──────────────────────
+# abc maps combinational logic exclusively to these primitives.
+# Leaving out NOT forces abc to fold inverters into NAND/NOR,
+# reducing the total gate count in the final SS14 circuit.
+abc -g AND,OR,XOR,NAND,NOR,XNOR
+
+# Map any residual abstract cells (covers leftover DFF/latch cells
+# that abc did not touch)
+simplemap
+
+# Remove dead wires and unused cells
+opt_clean -purge
+
+# ── Report ───────────────────────────────────────────────────
+tee -o synthesis_report.txt stat
+
+# ── Outputs ──────────────────────────────────────────────────
+write_json output_netlist.json
+
+log ""
+log "─────────────────────────────────────────────────────────"
+log "  Synthesis complete."
+log "  output_netlist.json  → run: python3 netlist_to_ss14.py output_netlist.json"
+log "  synthesis_report.txt → gate-count summary"
+log "─────────────────────────────────────────────────────────"
